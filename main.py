@@ -2,7 +2,7 @@ import os
 import math
 import logging
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
@@ -10,9 +10,9 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO)
 
-TOKEN      = os.environ["BOT_TOKEN"]
-SHEET_ID   = os.environ["SHEET_ID"]
-SHEET_URL  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
+TOKEN    = os.environ["BOT_TOKEN"]
+SHEET_ID = os.environ["SHEET_ID"]
+SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
 ZONAS = ["Centro", "Norte", "Sur", "Este", "Oeste"]
 
@@ -41,7 +41,10 @@ def distancia_km(lat1, lon1, lat2, lon2):
     R = 6371
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    a = (math.sin(dlat/2)**2 +
+         math.cos(math.radians(lat1)) *
+         math.cos(math.radians(lat2)) *
+         math.sin(dlon/2)**2)
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 def mas_cercano(parkings, lat, lon):
@@ -64,16 +67,23 @@ def mensaje_parking(p, dist_km=None):
     ]])
     return texto, teclado
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mostrar_menu(chat_id, context):
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📍 Enviar mi ubicación GPS", callback_data="pedir_ubicacion")],
-        [InlineKeyboardButton("🗺️ Elegir zona de la ciudad", callback_data="elegir_zona")],
+        [InlineKeyboardButton("📍 Enviar mi ubicación GPS",    callback_data="pedir_ubicacion")],
+        [InlineKeyboardButton("🗺️ Elegir zona de la ciudad",  callback_data="elegir_zona")],
     ])
-    await update.message.reply_text(
-        "👋 Hola. Soy el asistente de parkings para autobuses discrecionales.\n\n"
-        "¿Cómo quieres buscar el aparcamiento más cercano?",
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=(
+            "🚌 *DiscrePark — Parkings para autobuses*\n\n"
+            "¿Cómo quieres buscar el aparcamiento más cercano?"
+        ),
+        parse_mode="Markdown",
         reply_markup=teclado
     )
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await mostrar_menu(update.effective_chat.id, context)
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -82,18 +92,33 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "pedir_ubicacion":
         await q.message.reply_text(
-            "Pulsa el clip 📎 en Telegram → *Ubicación* → *Enviar mi ubicación actual*.",
+            "📍 Pulsa el clip 📎 → *Ubicación* → *Enviar mi ubicación actual*.",
             parse_mode="Markdown"
         )
+
     elif data == "elegir_zona":
-        botones = [[InlineKeyboardButton(z, callback_data=f"zona_{z}")] for z in ZONAS]
-        await q.message.reply_text("Elige una zona:", reply_markup=InlineKeyboardMarkup(botones))
+        botones = [
+            [InlineKeyboardButton(z, callback_data=f"zona_{z}")] for z in ZONAS
+        ]
+        botones.append([InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")])
+        await q.message.reply_text(
+            "Elige una zona:",
+            reply_markup=InlineKeyboardMarkup(botones)
+        )
+
+    elif data == "menu":
+        await mostrar_menu(q.message.chat_id, context)
+
     elif data.startswith("zona_"):
         zona = data[5:]
         parkings = cargar_parkings()
         filtrados = [p for p in parkings if p["zona"].lower() == zona.lower()]
         if not filtrados:
-            await q.message.reply_text(f"No tengo parkings registrados en la zona {zona}.")
+            await q.message.reply_text(
+                f"No tengo parkings registrados en la zona *{zona}*.",
+                parse_mode="Markdown"
+            )
+            await mostrar_menu(q.message.chat_id, context)
             return
         centro_zonas = {
             "Centro": (40.4168, -3.7038),
@@ -105,27 +130,51 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
         p = mas_cercano(filtrados, lat0, lon0)
         texto, teclado = mensaje_parking(p)
+
+        teclado_con_volver = InlineKeyboardMarkup(
+            teclado.inline_keyboard +
+            [[InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]]
+        )
         await q.message.reply_text(
             f"🅿️ Mejor opción en zona *{zona}*:\n\n{texto}",
-            parse_mode="Markdown", reply_markup=teclado
+            parse_mode="Markdown",
+            reply_markup=teclado_con_volver
         )
 
 async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc = update.message.location
     parkings = cargar_parkings()
     if not parkings:
-        await update.message.reply_text("No pude cargar los parkings. Inténtalo de nuevo.")
+        await update.message.reply_text(
+            "No pude cargar los parkings. Inténtalo de nuevo."
+        )
         return
     p = mas_cercano(parkings, loc.latitude, loc.longitude)
     dist = distancia_km(loc.latitude, loc.longitude, p["lat"], p["lon"])
     texto, teclado = mensaje_parking(p, dist)
+
+    teclado_con_volver = InlineKeyboardMarkup(
+        teclado.inline_keyboard +
+        [[InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]]
+    )
     await update.message.reply_text(
         f"Parking más cercano a tu posición:\n\n{texto}",
-        parse_mode="Markdown", reply_markup=teclado
+        parse_mode="Markdown",
+        reply_markup=teclado_con_volver
     )
 
+async def post_init(application):
+    await application.bot.set_my_commands([
+        BotCommand("start", "Buscar parking")
+    ])
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .post_init(post_init)
+        .build()
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback))
     app.add_handler(MessageHandler(filters.LOCATION, ubicacion))
