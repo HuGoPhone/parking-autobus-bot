@@ -52,24 +52,24 @@ def distancia_km(lat1, lon1, lat2, lon2):
          math.sin(dlon/2)**2)
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def mas_cercano(parkings, lat, lon):
-    return min(parkings, key=lambda p: distancia_km(lat, lon, p["lat"], p["lon"]))
+def dos_mas_cercanos(parkings, lat, lon):
+    ordenados = sorted(parkings, key=lambda p: distancia_km(lat, lon, p["lat"], p["lon"]))
+    return ordenados[:2]
 
-def construir_teclado_parking(lat, lon):
+def construir_teclado_parking(lat, lon, indice):
     gmaps = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}&travelmode=driving"
     waze  = f"https://waze.com/ul?ll={lat},{lon}&navigate=yes"
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🗺️ Google Maps", url=gmaps),
-            InlineKeyboardButton("🔵 Waze",        url=waze),
+            InlineKeyboardButton(f"🗺️ Maps ({indice})", url=gmaps),
+            InlineKeyboardButton(f"🔵 Waze ({indice})",  url=waze),
         ],
-        [InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")],
     ])
 
-def texto_parking(p, dist_km=None):
+def texto_parking(p, dist_km=None, indice=1):
     dist_txt = f"\n📍 Distancia: {dist_km:.1f} km" if dist_km else ""
     return (
-        f"🅿️ *{p['nombre']}*\n"
+        f"*{indice}º opción — {p['nombre']}*\n"
         f"⏱️ Tiempo máximo: {p['tiempo_maximo']}\n"
         f"🚌 Plazas: {p['plazas']}\n"
         f"🕐 Horario: {p['horario']}\n"
@@ -90,6 +90,21 @@ async def mostrar_menu(chat_id, context):
         ),
         parse_mode="Markdown",
         reply_markup=teclado
+    )
+
+async def enviar_dos_parkings(message, parkings_cercanos):
+    for i, p in enumerate(parkings_cercanos, 1):
+        dist = p.get("_dist")
+        await message.reply_text(
+            texto_parking(p, dist, i),
+            parse_mode="Markdown",
+            reply_markup=construir_teclado_parking(p["lat"], p["lon"], i)
+        )
+    await message.reply_text(
+        "¿Necesitas buscar de nuevo?",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]
+        ])
     )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -123,9 +138,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         zona = data[5:]
         parkings = cargar_parkings()
         if not parkings:
-            await q.message.reply_text(
-                "⚠️ No pude cargar los parkings. Inténtalo de nuevo."
-            )
+            await q.message.reply_text("⚠️ No pude cargar los parkings. Inténtalo de nuevo.")
             return
         centro_zonas = {
             "Centro": (40.4168, -3.7038),
@@ -135,28 +148,24 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Oeste":  (40.4300, -3.7600),
         }
         lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
-        p = mas_cercano(parkings, lat0, lon0)
+        cercanos = dos_mas_cercanos(parkings, lat0, lon0)
         await q.message.reply_text(
-            f"🅿️ Mejor opción en zona *{zona}*:\n\n{texto_parking(p)}",
-            parse_mode="Markdown",
-            reply_markup=construir_teclado_parking(p["lat"], p["lon"])
+            f"🅿️ Las 2 mejores opciones en zona *{zona}*:",
+            parse_mode="Markdown"
         )
+        await enviar_dos_parkings(q.message, cercanos)
 
 async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc = update.message.location
     parkings = cargar_parkings()
     if not parkings:
-        await update.message.reply_text(
-            "⚠️ No pude cargar los parkings. Inténtalo de nuevo."
-        )
+        await update.message.reply_text("⚠️ No pude cargar los parkings. Inténtalo de nuevo.")
         return
-    p = mas_cercano(parkings, loc.latitude, loc.longitude)
-    dist = distancia_km(loc.latitude, loc.longitude, p["lat"], p["lon"])
-    await update.message.reply_text(
-        f"Parking más cercano a tu posición:\n\n{texto_parking(p, dist)}",
-        parse_mode="Markdown",
-        reply_markup=construir_teclado_parking(p["lat"], p["lon"])
-    )
+    cercanos = dos_mas_cercanos(parkings, loc.latitude, loc.longitude)
+    for p in cercanos:
+        p["_dist"] = distancia_km(loc.latitude, loc.longitude, p["lat"], p["lon"])
+    await update.message.reply_text("🅿️ *Los 2 parkings más cercanos a tu posición:*", parse_mode="Markdown")
+    await enviar_dos_parkings(update.message, cercanos)
 
 async def post_init(application):
     await application.bot.set_my_commands([
