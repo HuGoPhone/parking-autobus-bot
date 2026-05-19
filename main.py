@@ -10,8 +10,8 @@ from telegram.ext import (
 
 logging.basicConfig(level=logging.INFO)
 
-TOKEN    = os.environ["BOT_TOKEN"]
-SHEET_ID = os.environ["SHEET_ID"]
+TOKEN     = os.environ["BOT_TOKEN"]
+SHEET_ID  = os.environ["SHEET_ID"]
 SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
 ZONAS = ["Centro", "Norte", "Sur", "Este", "Oeste"]
@@ -24,14 +24,16 @@ def cargar_parkings():
     for line in lines[1:]:
         line = line.strip().strip('"')
         parts = [p.strip().strip('"') for p in line.split(",")]
-        if len(parts) >= 5:
+        if len(parts) >= 7:
             try:
                 parkings.append({
-                    "nombre": parts[0],
-                    "lat":    float(parts[1]),
-                    "lon":    float(parts[2]),
-                    "tipo":   parts[3],
-                    "zona":   parts[4],
+                    "nombre":        parts[0],
+                    "lat":           float(parts[1]),
+                    "lon":           float(parts[2]),
+                    "tiempo_maximo": parts[3],
+                    "plazas":        parts[4],
+                    "horario":       parts[5],
+                    "restricciones": parts[6],
                 })
             except ValueError:
                 pass
@@ -51,14 +53,15 @@ def mas_cercano(parkings, lat, lon):
     return min(parkings, key=lambda p: distancia_km(lat, lon, p["lat"], p["lon"]))
 
 def mensaje_parking(p, dist_km=None):
-    tipo_txt = "Parada corta (≤15 min)" if "corta" in p["tipo"] else "Larga estancia"
     dist_txt = f"\n📍 Distancia: {dist_km:.1f} km" if dist_km else ""
     gmaps = f"https://www.google.com/maps/dir/?api=1&destination={p['lat']},{p['lon']}&travelmode=driving"
     waze  = f"https://waze.com/ul?ll={p['lat']},{p['lon']}&navigate=yes"
     texto = (
         f"🅿️ *{p['nombre']}*\n"
-        f"🚌 Tipo: {tipo_txt}\n"
-        f"🗺️ Zona: {p['zona']}"
+        f"⏱️ Tiempo máximo: {p['tiempo_maximo']}\n"
+        f"🚌 Plazas: {p['plazas']}\n"
+        f"🕐 Horario: {p['horario']}\n"
+        f"⚠️ Restricciones: {p['restricciones']}"
         f"{dist_txt}"
     )
     teclado = InlineKeyboardMarkup([[
@@ -69,8 +72,8 @@ def mensaje_parking(p, dist_km=None):
 
 async def mostrar_menu(chat_id, context):
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📍 Enviar mi ubicación GPS",    callback_data="pedir_ubicacion")],
-        [InlineKeyboardButton("🗺️ Elegir zona de la ciudad",  callback_data="elegir_zona")],
+        [InlineKeyboardButton("📍 Enviar mi ubicación GPS",   callback_data="pedir_ubicacion")],
+        [InlineKeyboardButton("🗺️ Elegir zona de la ciudad", callback_data="elegir_zona")],
     ])
     await context.bot.send_message(
         chat_id=chat_id,
@@ -112,13 +115,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("zona_"):
         zona = data[5:]
         parkings = cargar_parkings()
-        filtrados = [p for p in parkings if p["zona"].lower() == zona.lower()]
-        if not filtrados:
+        if not parkings:
             await q.message.reply_text(
-                f"No tengo parkings registrados en la zona *{zona}*.",
-                parse_mode="Markdown"
+                "No pude cargar los parkings. Inténtalo de nuevo."
             )
-            await mostrar_menu(q.message.chat_id, context)
             return
         centro_zonas = {
             "Centro": (40.4168, -3.7038),
@@ -128,7 +128,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Oeste":  (40.4300, -3.7600),
         }
         lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
-        p = mas_cercano(filtrados, lat0, lon0)
+        p = mas_cercano(parkings, lat0, lon0)
         texto, teclado = mensaje_parking(p)
 
         teclado_con_volver = InlineKeyboardMarkup(
