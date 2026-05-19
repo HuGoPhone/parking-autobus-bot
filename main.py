@@ -2,6 +2,8 @@ import os
 import math
 import logging
 import requests
+import csv
+import io
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -17,27 +19,28 @@ SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:
 ZONAS = ["Centro", "Norte", "Sur", "Este", "Oeste"]
 
 def cargar_parkings():
-    r = requests.get(SHEET_URL, timeout=10)
-    r.encoding = "utf-8"
-    lines = r.text.strip().splitlines()
-    parkings = []
-    for line in lines[1:]:
-        line = line.strip().strip('"')
-        parts = [p.strip().strip('"') for p in line.split(",")]
-        if len(parts) >= 7:
+    try:
+        r = requests.get(SHEET_URL, timeout=10)
+        r.encoding = "utf-8"
+        reader = csv.DictReader(io.StringIO(r.text))
+        parkings = []
+        for row in reader:
             try:
                 parkings.append({
-                    "nombre":        parts[0],
-                    "lat":           float(parts[1]),
-                    "lon":           float(parts[2]),
-                    "tiempo_maximo": parts[3],
-                    "plazas":        parts[4],
-                    "horario":       parts[5],
-                    "restricciones": parts[6],
+                    "nombre":        row.get("nombre", "Sin nombre").strip(),
+                    "lat":           float(row.get("lat", 0)),
+                    "lon":           float(row.get("lon", 0)),
+                    "tiempo_maximo": row.get("tiempo_maximo", "No disponible").strip(),
+                    "plazas":        row.get("plazas", "No disponible").strip(),
+                    "horario":       row.get("horario", "No disponible").strip(),
+                    "restricciones": row.get("restricciones", "No disponible").strip(),
                 })
             except ValueError:
-                pass
-    return parkings
+                continue
+        return parkings
+    except Exception as e:
+        logging.error(f"Error cargando parkings: {e}")
+        return []
 
 def distancia_km(lat1, lon1, lat2, lon2):
     R = 6371
@@ -117,7 +120,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parkings = cargar_parkings()
         if not parkings:
             await q.message.reply_text(
-                "No pude cargar los parkings. Inténtalo de nuevo."
+                "⚠️ No pude cargar los parkings. Inténtalo de nuevo."
             )
             return
         centro_zonas = {
@@ -130,7 +133,6 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
         p = mas_cercano(parkings, lat0, lon0)
         texto, teclado = mensaje_parking(p)
-
         teclado_con_volver = InlineKeyboardMarkup(
             teclado.inline_keyboard +
             [[InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]]
@@ -146,13 +148,12 @@ async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parkings = cargar_parkings()
     if not parkings:
         await update.message.reply_text(
-            "No pude cargar los parkings. Inténtalo de nuevo."
+            "⚠️ No pude cargar los parkings. Inténtalo de nuevo."
         )
         return
     p = mas_cercano(parkings, loc.latitude, loc.longitude)
     dist = distancia_km(loc.latitude, loc.longitude, p["lat"], p["lon"])
     texto, teclado = mensaje_parking(p, dist)
-
     teclado_con_volver = InlineKeyboardMarkup(
         teclado.inline_keyboard +
         [[InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]]
