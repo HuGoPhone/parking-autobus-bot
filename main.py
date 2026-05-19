@@ -55,11 +55,20 @@ def distancia_km(lat1, lon1, lat2, lon2):
 def mas_cercano(parkings, lat, lon):
     return min(parkings, key=lambda p: distancia_km(lat, lon, p["lat"], p["lon"]))
 
-def mensaje_parking(p, dist_km=None):
+def construir_teclado_parking(lat, lon):
+    gmaps = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lon}&travelmode=driving"
+    waze  = f"https://waze.com/ul?ll={lat},{lon}&navigate=yes"
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🗺️ Google Maps", url=gmaps),
+            InlineKeyboardButton("🔵 Waze",        url=waze),
+        ],
+        [InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")],
+    ])
+
+def texto_parking(p, dist_km=None):
     dist_txt = f"\n📍 Distancia: {dist_km:.1f} km" if dist_km else ""
-    gmaps = f"https://www.google.com/maps/dir/?api=1&destination={p['lat']},{p['lon']}&travelmode=driving"
-    waze  = f"https://waze.com/ul?ll={p['lat']},{p['lon']}&navigate=yes"
-    texto = (
+    return (
         f"🅿️ *{p['nombre']}*\n"
         f"⏱️ Tiempo máximo: {p['tiempo_maximo']}\n"
         f"🚌 Plazas: {p['plazas']}\n"
@@ -67,11 +76,6 @@ def mensaje_parking(p, dist_km=None):
         f"⚠️ Restricciones: {p['restricciones']}"
         f"{dist_txt}"
     )
-    teclado = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🗺️ Google Maps", url=gmaps),
-        InlineKeyboardButton("🔵 Waze",        url=waze),
-    ]])
-    return texto, teclado
 
 async def mostrar_menu(chat_id, context):
     teclado = InlineKeyboardMarkup([
@@ -132,15 +136,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
         p = mas_cercano(parkings, lat0, lon0)
-        texto, teclado = mensaje_parking(p)
-        teclado_con_volver = InlineKeyboardMarkup(
-            teclado.inline_keyboard +
-            [[InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]]
-        )
         await q.message.reply_text(
-            f"🅿️ Mejor opción en zona *{zona}*:\n\n{texto}",
+            f"🅿️ Mejor opción en zona *{zona}*:\n\n{texto_parking(p)}",
             parse_mode="Markdown",
-            reply_markup=teclado_con_volver
+            reply_markup=construir_teclado_parking(p["lat"], p["lon"])
         )
 
 async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,15 +152,10 @@ async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     p = mas_cercano(parkings, loc.latitude, loc.longitude)
     dist = distancia_km(loc.latitude, loc.longitude, p["lat"], p["lon"])
-    texto, teclado = mensaje_parking(p, dist)
-    teclado_con_volver = InlineKeyboardMarkup(
-        teclado.inline_keyboard +
-        [[InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")]]
-    )
     await update.message.reply_text(
-        f"Parking más cercano a tu posición:\n\n{texto}",
+        f"Parking más cercano a tu posición:\n\n{texto_parking(p, dist)}",
         parse_mode="Markdown",
-        reply_markup=teclado_con_volver
+        reply_markup=construir_teclado_parking(p["lat"], p["lon"])
     )
 
 async def post_init(application):
