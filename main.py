@@ -22,8 +22,8 @@ SHEET_URL  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out
 ZONAS = ["Centro", "Norte", "Sur", "Este", "Oeste"]
 
 # ── Estado en memoria ─────────────────────────────────────────────────────────
-reportes   = {}   # {nombre_parking: "lleno" | "libre" | "cerrado"}
-estadisticas = defaultdict(int)   # {nombre_parking: nº consultas}
+reportes     = {}
+estadisticas = defaultdict(int)
 
 def reiniciar_reportes_si_toca():
     hora = datetime.now().hour
@@ -67,24 +67,24 @@ def distancia_km(lat1, lon1, lat2, lon2):
          math.sin(dlon/2)**2)
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def dos_mas_cercanos(parkings, lat, lon, tipo_filtro=None):
+def tres_mas_cercanos(parkings, lat, lon, tipo_filtro=None):
     if tipo_filtro and tipo_filtro != "todos":
         parkings = [
             p for p in parkings
             if p["tipo"] == tipo_filtro or p["tipo"] == "ambas"
         ]
     ordenados = sorted(parkings, key=lambda p: distancia_km(lat, lon, p["lat"], p["lon"]))
-    return ordenados[:2]
+    return ordenados[:3]
 
 # ── Textos y teclados ─────────────────────────────────────────────────────────
 def estado_parking(nombre):
     estado = reportes.get(nombre)
     if estado == "lleno":
-        return "🔴 Reportado como lleno"
+        return "🔴 Reportado como completo"
     elif estado == "cerrado":
         return "⛔ Reportado como cerrado"
     elif estado == "libre":
-        return "🟢 Reportado con plazas libres"
+        return "🟢 Reportado como disponible"
     return "⚪ Sin reportes recientes"
 
 def texto_parking(p, dist_km=None, indice=1):
@@ -109,9 +109,9 @@ def teclado_parking(p, indice):
             InlineKeyboardButton(f"🔵 Waze ({indice})",  url=waze),
         ],
         [
-            InlineKeyboardButton("🔴 Lleno",   callback_data=f"rep_lleno_{nombre_enc}"),
-            InlineKeyboardButton("🟢 Hay plazas", callback_data=f"rep_libre_{nombre_enc}"),
-            InlineKeyboardButton("⛔ Cerrado", callback_data=f"rep_cerrado_{nombre_enc}"),
+            InlineKeyboardButton("🔴 Completo",   callback_data=f"rep_lleno_{nombre_enc}"),
+            InlineKeyboardButton("🟢 Disponible", callback_data=f"rep_libre_{nombre_enc}"),
+            InlineKeyboardButton("⛔ Cerrado",    callback_data=f"rep_cerrado_{nombre_enc}"),
         ],
     ])
 
@@ -128,13 +128,12 @@ async def mostrar_menu(chat_id, context):
         reply_markup=teclado
     )
 
-async def mostrar_filtro_tipo(message, origen, extra=""):
-    """origen puede ser 'gps' o una zona como 'Centro'"""
+async def mostrar_filtro_tipo(message, origen):
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏱️ Parada corta (≤15 min)",    callback_data=f"tipo_corta_{origen}{extra}")],
-        [InlineKeyboardButton("🕐 Media estancia (hasta 2h)", callback_data=f"tipo_media_{origen}{extra}")],
-        [InlineKeyboardButton("🅿️ Larga estancia",            callback_data=f"tipo_larga_{origen}{extra}")],
-        [InlineKeyboardButton("🔍 Mostrar todos",             callback_data=f"tipo_todos_{origen}{extra}")],
+        [InlineKeyboardButton("⏱️ Parada corta (≤15 min)",    callback_data=f"tipo_corta_{origen}")],
+        [InlineKeyboardButton("🕐 Media estancia (hasta 2h)", callback_data=f"tipo_media_{origen}")],
+        [InlineKeyboardButton("🅿️ Larga estancia",            callback_data=f"tipo_larga_{origen}")],
+        [InlineKeyboardButton("🔍 Mostrar todos",             callback_data=f"tipo_todos_{origen}")],
         [InlineKeyboardButton("⬅️ Volver al menú",            callback_data="menu")],
     ])
     await message.reply_text(
@@ -179,19 +178,19 @@ async def estadisticas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not estadisticas:
         await update.message.reply_text("📊 Aún no hay consultas registradas hoy.")
         return
-    total = sum(estadisticas.values())
+    total   = sum(estadisticas.values())
     ranking = sorted(estadisticas.items(), key=lambda x: x[1], reverse=True)
-    texto = f"📊 *Estadísticas del día*\n\n🔢 Total consultas: {total}\n\n*Parkings más consultados:*\n"
+    texto   = f"📊 *Estadísticas del día*\n\n🔢 Total consultas: {total}\n\n*Parkings más consultados:*\n"
     for i, (nombre, count) in enumerate(ranking, 1):
         texto += f"{i}. {nombre}: {count} consulta{'s' if count > 1 else ''}\n"
     await update.message.reply_text(texto, parse_mode="Markdown")
 
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
+    q    = update.callback_query
     await q.answer()
     data = q.data
 
-    # ── Menú y navegación ──
+    # ── Navegación ──
     if data == "menu":
         await mostrar_menu(q.message.chat_id, context)
 
@@ -205,20 +204,23 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "elegir_zona":
         botones = [[InlineKeyboardButton(z, callback_data=f"zona_{z}")] for z in ZONAS]
         botones.append([InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")])
-        await q.message.reply_text("Elige una zona:", reply_markup=InlineKeyboardMarkup(botones))
+        await q.message.reply_text(
+            "Elige una zona:",
+            reply_markup=InlineKeyboardMarkup(botones)
+        )
 
-    # ── Selección de zona → pide tipo ──
+    # ── Zona seleccionada → pide tipo ──
     elif data.startswith("zona_"):
         zona = data[5:]
         context.user_data["zona_seleccionada"] = zona
         await mostrar_filtro_tipo(q.message, zona)
 
-    # ── Selección de tipo ──
+    # ── Tipo seleccionado → resultados ──
     elif data.startswith("tipo_"):
-        partes    = data.split("_", 2)
-        tipo      = partes[1]
-        origen    = partes[2] if len(partes) > 2 else "todos"
-        parkings  = cargar_parkings()
+        partes   = data.split("_", 2)
+        tipo     = partes[1]
+        origen   = partes[2] if len(partes) > 2 else "todos"
+        parkings = cargar_parkings()
         reiniciar_reportes_si_toca()
 
         if origen == "gps":
@@ -227,7 +229,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.message.reply_text("⚠️ No tengo tu ubicación. Envíala de nuevo.")
                 return
             lat, lon = coords
-            cercanos = dos_mas_cercanos(parkings, lat, lon, tipo)
+            cercanos = tres_mas_cercanos(parkings, lat, lon, tipo)
             for p in cercanos:
                 p["_dist"] = distancia_km(lat, lon, p["lat"], p["lon"])
         else:
@@ -240,17 +242,17 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Oeste":  (40.4300, -3.7600),
             }
             lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
-            cercanos = dos_mas_cercanos(parkings, lat0, lon0, tipo)
+            cercanos   = tres_mas_cercanos(parkings, lat0, lon0, tipo)
 
         tipo_txt = {
             "corta": "parada corta",
             "media": "media estancia",
             "larga": "larga estancia",
-            "todos": "todos los tipos"
+            "todos": "todos los tipos",
         }.get(tipo, tipo)
 
         await q.message.reply_text(
-            f"🅿️ *Las 2 mejores opciones — {tipo_txt}:*",
+            f"🅿️ *Las 3 mejores opciones — {tipo_txt}:*",
             parse_mode="Markdown"
         )
         await enviar_resultados(q.message, cercanos)
@@ -262,18 +264,22 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nombre  = partes[2].replace("_", " ")
         reportes[nombre] = estado
         estado_txt = {
-            "lleno":   "🔴 Gracias. Se ha reportado como lleno.",
-            "libre":   "🟢 Gracias. Se ha reportado con plazas libres.",
+            "lleno":   "🔴 Gracias. Se ha reportado como completo.",
+            "libre":   "🟢 Gracias. Se ha reportado como disponible.",
             "cerrado": "⛔ Gracias. Se ha reportado como cerrado.",
         }.get(estado, "Reporte registrado.")
         await q.message.reply_text(estado_txt)
-        if context.bot_data.get("admin_id"):
-            conductor = q.from_user.first_name or "Un conductor"
-            await context.bot.send_message(
-                chat_id=ADMIN_ID,
-                text=f"📢 *Reporte recibido*\n\n{conductor} ha reportado *{nombre}* como *{estado}*.",
-                parse_mode="Markdown"
-            )
+        conductor = q.from_user.first_name or "Un conductor"
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"📢 *Reporte recibido*\n\n"
+                f"👤 Conductor: {conductor}\n"
+                f"🅿️ Parking: {nombre}\n"
+                f"📊 Estado: {estado}"
+            ),
+            parse_mode="Markdown"
+        )
 
 async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     loc = update.message.location
