@@ -21,6 +21,21 @@ SHEET_URL  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out
 
 ZONAS = ["Centro", "Norte", "Sur", "Este", "Oeste"]
 
+# ── Mapa de tiempo_maximo a categoría ────────────────────────────────────────
+CATEGORIAS_TIEMPO = {
+    "5 min":          "5min",
+    "15 min":         "15min",
+    "120 min":        "2h",
+    "larga estancia": "larga",
+}
+
+def categoria_tiempo(tiempo_maximo):
+    t = tiempo_maximo.strip().lower()
+    for clave, cat in CATEGORIAS_TIEMPO.items():
+        if clave in t:
+            return cat
+    return "otros"
+
 # ── Estado en memoria ─────────────────────────────────────────────────────────
 reportes     = {}
 estadisticas = defaultdict(int)
@@ -67,14 +82,33 @@ def distancia_km(lat1, lon1, lat2, lon2):
          math.sin(dlon/2)**2)
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-def tres_mas_cercanos(parkings, lat, lon, tipo_filtro=None):
-    if tipo_filtro and tipo_filtro != "todos":
-        parkings = [
+def ordenar_por_distancia(parkings, lat, lon):
+    return sorted(parkings, key=lambda p: distancia_km(lat, lon, p["lat"], p["lon"]))
+
+def seleccionar_parkings(parkings, lat, lon, tipo_filtro):
+    """
+    - tipo_filtro == 'todos': 1 más cercano de cada categoría de tiempo
+    - tipo_filtro concreto:   2 más cercanos de ese tipo
+    """
+    if tipo_filtro == "todos":
+        ordenados = ordenar_por_distancia(parkings, lat, lon)
+        vistos    = set()
+        resultado = []
+        for p in ordenados:
+            cat = categoria_tiempo(p["tiempo_maximo"])
+            if cat not in vistos:
+                vistos.add(cat)
+                resultado.append(p)
+            if len(vistos) == 4:
+                break
+        return resultado
+    else:
+        filtrados = [
             p for p in parkings
             if p["tipo"] == tipo_filtro or p["tipo"] == "ambas"
         ]
-    ordenados = sorted(parkings, key=lambda p: distancia_km(lat, lon, p["lat"], p["lon"]))
-    return ordenados[:3]
+        ordenados = ordenar_por_distancia(filtrados, lat, lon)
+        return ordenados[:2]
 
 # ── Textos y teclados ─────────────────────────────────────────────────────────
 def estado_parking(nombre):
@@ -176,127 +210,4 @@ async def estadisticas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("📊 Aún no hay consultas registradas hoy.")
         return
     total   = sum(estadisticas.values())
-    ranking = sorted(estadisticas.items(), key=lambda x: x[1], reverse=True)
-    texto   = f"📊 *Estadísticas del día*\n\n🔢 Total consultas: {total}\n\n*Parkings más consultados:*\n"
-    for i, (nombre, count) in enumerate(ranking, 1):
-        texto += f"{i}. {nombre}: {count} consulta{'s' if count > 1 else ''}\n"
-    await update.message.reply_text(texto, parse_mode="Markdown")
-
-async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q    = update.callback_query
-    await q.answer()
-    data = q.data
-
-    # ── Navegación ──
-    if data == "menu":
-        await mostrar_menu(q.message.chat_id, context)
-
-    elif data == "pedir_ubicacion":
-        context.user_data["esperando_ubicacion"] = True
-        await q.message.reply_text(
-            "📍 Pulsa el clip 📎 → *Ubicación* → *Enviar mi ubicación actual*.",
-            parse_mode="Markdown"
-        )
-
-    elif data == "elegir_zona":
-        botones = [[InlineKeyboardButton(z, callback_data=f"zona_{z}")] for z in ZONAS]
-        botones.append([InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")])
-        await q.message.reply_text(
-            "Elige una zona:",
-            reply_markup=InlineKeyboardMarkup(botones)
-        )
-
-    # ── Zona seleccionada → pide tipo ──
-    elif data.startswith("zona_"):
-        zona = data[5:]
-        context.user_data["zona_seleccionada"] = zona
-        await mostrar_filtro_tipo(q.message, zona)
-
-    # ── Tipo seleccionado → resultados ──
-    elif data.startswith("tipo_"):
-        partes   = data.split("_", 2)
-        tipo     = partes[1]
-        origen   = partes[2] if len(partes) > 2 else "todos"
-        parkings = cargar_parkings()
-        reiniciar_reportes_si_toca()
-
-        if origen == "gps":
-            coords = context.user_data.get("ultima_ubicacion")
-            if not coords:
-                await q.message.reply_text("⚠️ No tengo tu ubicación. Envíala de nuevo.")
-                return
-            lat, lon = coords
-            cercanos = tres_mas_cercanos(parkings, lat, lon, tipo)
-            for p in cercanos:
-                p["_dist"] = distancia_km(lat, lon, p["lat"], p["lon"])
-        else:
-            zona = origen
-            centro_zonas = {
-                "Centro": (40.4168, -3.7038),
-                "Norte":  (40.4800, -3.6900),
-                "Sur":    (40.3700, -3.7000),
-                "Este":   (40.4300, -3.6200),
-                "Oeste":  (40.4300, -3.7600),
-            }
-            lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
-            cercanos   = tres_mas_cercanos(parkings, lat0, lon0, tipo)
-
-        tipo_txt = {
-            "corta": "parada corta",
-            "media": "media estancia",
-            "larga": "larga estancia",
-            "todos": "todos los tipos",
-        }.get(tipo, tipo)
-
-        await q.message.reply_text(
-            f"🅿️ *Las 3 mejores opciones — {tipo_txt}:*",
-            parse_mode="Markdown"
-        )
-        await enviar_resultados(q.message, cercanos)
-
-    # ── Reportes ──
-    elif data.startswith("rep_"):
-        partes  = data.split("_", 2)
-        estado  = partes[1]
-        nombre  = partes[2].replace("_", " ")
-        reportes[nombre] = estado
-        estado_txt = {
-            "lleno": "🔴 Gracias. Se ha reportado como completo.",
-            "libre": "🟢 Gracias. Se ha reportado como disponible.",
-        }.get(estado, "Reporte registrado.")
-        await q.message.reply_text(estado_txt)
-        conductor = q.from_user.first_name or "Un conductor"
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                f"📢 *Reporte recibido*\n\n"
-                f"👤 Conductor: {conductor}\n"
-                f"🅿️ Parking: {nombre}\n"
-                f"📊 Estado: {'completo' if estado == 'lleno' else 'disponible'}"
-            ),
-            parse_mode="Markdown"
-        )
-
-async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    loc = update.message.location
-    context.user_data["ultima_ubicacion"] = (loc.latitude, loc.longitude)
-    await mostrar_filtro_tipo(update.message, "gps")
-
-async def post_init(application):
-    await application.bot.set_my_commands([
-        BotCommand("start",        "Buscar parking"),
-        BotCommand("estadisticas", "Ver estadísticas del día (solo admin)"),
-    ])
-
-if __name__ == "__main__":
-    app = (
-        ApplicationBuilder()
-        .token(TOKEN)
-        .post_init(post_init)
-        .build()
-    )
-    app.add_handler(CommandHandler("start",        start))
-    app.add_handler(CommandHandler("estadisticas", estadisticas_cmd))
-    app.add_handler(CallbackQueryHandler(callback))
-    app.add_handler(MessageHandler(filters.LOCATION, ubicacion))
-    app.run_polling()
+    ranking = sorted(estadis
