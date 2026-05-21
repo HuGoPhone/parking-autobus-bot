@@ -81,8 +81,6 @@ def estado_parking(nombre):
     estado = reportes.get(nombre)
     if estado == "lleno":
         return "🔴 Reportado como completo"
-    elif estado == "cerrado":
-        return "⛔ Reportado como cerrado"
     elif estado == "libre":
         return "🟢 Reportado como disponible"
     return "⚪ Sin reportes recientes"
@@ -111,7 +109,6 @@ def teclado_parking(p, indice):
         [
             InlineKeyboardButton("🔴 Completo",   callback_data=f"rep_lleno_{nombre_enc}"),
             InlineKeyboardButton("🟢 Disponible", callback_data=f"rep_libre_{nombre_enc}"),
-            InlineKeyboardButton("⛔ Cerrado",    callback_data=f"rep_cerrado_{nombre_enc}"),
         ],
     ])
 
@@ -264,9 +261,8 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nombre  = partes[2].replace("_", " ")
         reportes[nombre] = estado
         estado_txt = {
-            "lleno":   "🔴 Gracias. Se ha reportado como completo.",
-            "libre":   "🟢 Gracias. Se ha reportado como disponible.",
-            "cerrado": "⛔ Gracias. Se ha reportado como cerrado.",
+            "lleno": "🔴 Gracias. Se ha reportado como completo.",
+            "libre": "🟢 Gracias. Se ha reportado como disponible.",
         }.get(estado, "Reporte registrado.")
         await q.message.reply_text(estado_txt)
         conductor = q.from_user.first_name or "Un conductor"
@@ -276,7 +272,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📢 *Reporte recibido*\n\n"
                 f"👤 Conductor: {conductor}\n"
                 f"🅿️ Parking: {nombre}\n"
-                f"📊 Estado: {estado}"
+                f"📊 Estado: {'completo' if estado == 'lleno' else 'disponible'}"
             ),
             parse_mode="Markdown"
         )
