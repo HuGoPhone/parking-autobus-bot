@@ -19,8 +19,6 @@ SHEET_ID   = os.environ["SHEET_ID"]
 ADMIN_ID   = int(os.environ["ADMIN_ID"])
 SHEET_URL  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv"
 
-ZONAS = ["Centro", "Norte", "Sur", "Este", "Oeste"]
-
 # ── Mapa de tiempo_maximo a categoría ────────────────────────────────────────
 CATEGORIAS_TIEMPO = {
     "5 min":          "5min",
@@ -63,6 +61,7 @@ def cargar_parkings():
                     "horario":       row.get("horario", "No disponible").strip(),
                     "restricciones": row.get("restricciones", "No disponible").strip(),
                     "tipo":          row.get("tipo", "ambas").strip().lower(),
+                    "zona":          row.get("zona", "").strip(),
                 })
             except ValueError:
                 continue
@@ -70,6 +69,11 @@ def cargar_parkings():
     except Exception as e:
         logging.error(f"Error cargando parkings: {e}")
         return []
+
+def obtener_zonas(parkings):
+    """Extrae las zonas únicas de los parkings cargados, en orden alfabético."""
+    zonas = sorted(set(p["zona"] for p in parkings if p["zona"]))
+    return zonas
 
 # ── Cálculo de distancia ──────────────────────────────────────────────────────
 def distancia_km(lat1, lon1, lat2, lon2):
@@ -105,6 +109,34 @@ def seleccionar_parkings(parkings, lat, lon, tipo_filtro):
         ]
         ordenados = ordenar_por_distancia(filtrados, lat, lon)
         return ordenados[:2]
+
+def seleccionar_parkings_zona(parkings, zona, tipo_filtro):
+    """Filtra por zona (desde Sheets) y luego por tipo."""
+    filtrados = [p for p in parkings if p["zona"].lower() == zona.lower()]
+    if not filtrados:
+        return []
+    if tipo_filtro == "todos":
+        lat0 = sum(p["lat"] for p in filtrados) / len(filtrados)
+        lon0 = sum(p["lon"] for p in filtrados) / len(filtrados)
+        ordenados = ordenar_por_distancia(filtrados, lat0, lon0)
+        vistos    = set()
+        resultado = []
+        for p in ordenados:
+            cat = categoria_tiempo(p["tiempo_maximo"])
+            if cat not in vistos:
+                vistos.add(cat)
+                resultado.append(p)
+            if len(vistos) == 4:
+                break
+        return resultado
+    else:
+        por_tipo = [
+            p for p in filtrados
+            if p["tipo"] == tipo_filtro or p["tipo"] == "ambas"
+        ]
+        lat0 = sum(p["lat"] for p in filtrados) / len(filtrados)
+        lon0 = sum(p["lon"] for p in filtrados) / len(filtrados)
+        return ordenar_por_distancia(por_tipo, lat0, lon0)[:2]
 
 # ── Textos y teclados ─────────────────────────────────────────────────────────
 def estado_parking(nombre):
@@ -228,7 +260,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "elegir_zona":
-        botones = [[InlineKeyboardButton(z, callback_data=f"zona_{z}")] for z in ZONAS]
+        parkings = cargar_parkings()
+        zonas    = obtener_zonas(parkings)
+        if not zonas:
+            await q.message.reply_text(
+                "⚠️ No hay zonas definidas en la base de datos."
+            )
+            return
+        botones = [[InlineKeyboardButton(z, callback_data=f"zona_{z}")] for z in zonas]
         botones.append([InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")])
         await q.message.reply_text(
             "Elige una zona:",
@@ -238,7 +277,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("zona_"):
         zona = data[5:]
         context.user_data["zona_seleccionada"] = zona
-        await mostrar_filtro_tipo(q.message, zona)
+        await mostrar_filtro_tipo(q.message, f"zona_{zona}")
 
     elif data.startswith("tipo_"):
         partes   = data.split("_", 2)
@@ -256,17 +295,14 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cercanos = seleccionar_parkings(parkings, lat, lon, tipo)
             for p in cercanos:
                 p["_dist"] = distancia_km(lat, lon, p["lat"], p["lon"])
+
+        elif origen.startswith("zona_"):
+            zona     = origen[5:]
+            cercanos = seleccionar_parkings_zona(parkings, zona, tipo)
+
         else:
-            zona = origen
-            centro_zonas = {
-                "Centro": (40.4168, -3.7038),
-                "Norte":  (40.4800, -3.6900),
-                "Sur":    (40.3700, -3.7000),
-                "Este":   (40.4300, -3.6200),
-                "Oeste":  (40.4300, -3.7600),
-            }
-            lat0, lon0 = centro_zonas.get(zona, (40.4168, -3.7038))
-            cercanos   = seleccionar_parkings(parkings, lat0, lon0, tipo)
+            await q.message.reply_text("⚠️ Origen no reconocido. Vuelve al menú.")
+            return
 
         tipo_txt = {
             "corta": "parada corta — 2 más cercanos",
