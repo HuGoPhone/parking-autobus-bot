@@ -35,13 +35,21 @@ def categoria_tiempo(tiempo_maximo):
     return "otros"
 
 # ── Estado en memoria ─────────────────────────────────────────────────────────
-reportes     = {}
-estadisticas = defaultdict(int)
+reportes            = {}
+estadisticas         = defaultdict(int)
+usuarios_busquedas   = defaultdict(int)   # {user_id: nº búsquedas}
+usuarios_nombres     = {}                 # {user_id: nombre visible}
+usuarios_ultima_vez  = {}                 # {user_id: hora última búsqueda}
 
 def reiniciar_reportes_si_toca():
     hora = datetime.now().hour
     if hora >= 20 or hora < 9:
         reportes.clear()
+
+def registrar_usuario(user):
+    usuarios_busquedas[user.id] += 1
+    usuarios_nombres[user.id] = user.full_name or user.first_name or f"ID {user.id}"
+    usuarios_ultima_vez[user.id] = datetime.now().strftime("%H:%M")
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
 def cargar_parkings():
@@ -255,6 +263,21 @@ async def estadisticas_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         texto += f"{i}. {nombre}: {count} consulta{'s' if count > 1 else ''}\n"
     await update.message.reply_text(texto, parse_mode="Markdown")
 
+async def usuarios_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ No tienes permiso para usar este comando.")
+        return
+    if not usuarios_busquedas:
+        await update.message.reply_text("👥 Aún no hay conductores registrados hoy.")
+        return
+    ranking = sorted(usuarios_busquedas.items(), key=lambda x: x[1], reverse=True)
+    texto   = f"👥 *Conductores que han buscado hoy*\n\n🔢 Total conductores: {len(ranking)}\n\n"
+    for i, (user_id, count) in enumerate(ranking, 1):
+        nombre     = usuarios_nombres.get(user_id, f"ID {user_id}")
+        ultima_vez = usuarios_ultima_vez.get(user_id, "—")
+        texto += f"{i}. {nombre} — {count} búsqueda{'s' if count > 1 else ''} (última: {ultima_vez})\n"
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
 async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q    = update.callback_query
     await q.answer()
@@ -316,6 +339,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         origen   = partes[2] if len(partes) > 2 else "todos"
         parkings = cargar_parkings()
         reiniciar_reportes_si_toca()
+        registrar_usuario(q.from_user)
 
         if origen == "gps":
             coords = context.user_data.get("ultima_ubicacion")
@@ -380,7 +404,8 @@ async def ubicacion(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application):
     await application.bot.set_my_commands([
         BotCommand("start",        "Buscar parking"),
-        BotCommand("estadisticas", "Ver estadísticas del día (solo admin)"),
+        BotCommand("estadisticas", "Ver parkings más buscados (solo admin)"),
+        BotCommand("usuarios",     "Ver qué conductores buscan (solo admin)"),
     ])
 
 if __name__ == "__main__":
@@ -392,6 +417,7 @@ if __name__ == "__main__":
     )
     app.add_handler(CommandHandler("start",        start))
     app.add_handler(CommandHandler("estadisticas", estadisticas_cmd))
+    app.add_handler(CommandHandler("usuarios",     usuarios_cmd))
     app.add_handler(CallbackQueryHandler(callback))
     app.add_handler(MessageHandler(filters.LOCATION, ubicacion))
     app.run_polling()
