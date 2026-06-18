@@ -66,19 +66,24 @@ def cargar_parkings():
                 })
             except ValueError:
                 continue
+        logging.info(f"Parkings cargados: {len(parkings)}")
         return parkings
     except Exception as e:
         logging.error(f"Error cargando parkings: {e}")
         return []
 
 def obtener_ciudades(parkings):
-    return sorted(set(p["ciudad"] for p in parkings if p["ciudad"]))
+    ciudades = sorted(set(p["ciudad"] for p in parkings if p["ciudad"]))
+    logging.info(f"Ciudades detectadas: {ciudades}")
+    return ciudades
 
 def obtener_zonas_de_ciudad(parkings, ciudad):
-    return sorted(set(
+    zonas = sorted(set(
         p["zona"] for p in parkings
         if p["zona"] and p["ciudad"].lower() == ciudad.lower()
     ))
+    logging.info(f"Zonas para {ciudad}: {zonas}")
+    return zonas
 
 # ── Cálculo de distancia ──────────────────────────────────────────────────────
 def distancia_km(lat1, lon1, lat2, lon2):
@@ -271,7 +276,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parkings = cargar_parkings()
         ciudades = obtener_ciudades(parkings)
         if not ciudades:
-            await q.message.reply_text("⚠️ No hay ciudades definidas en la base de datos.")
+            await q.message.reply_text(
+                "⚠️ No hay ciudades definidas en la base de datos.\n\n"
+                "Comprueba que la columna 'ciudad' en Sheets tiene valores rellenos."
+            )
             return
         botones = [[InlineKeyboardButton(c, callback_data=f"ciudad_{c}")] for c in ciudades]
         botones.append([InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")])
