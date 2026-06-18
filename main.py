@@ -62,6 +62,7 @@ def cargar_parkings():
                     "restricciones": row.get("restricciones", "No disponible").strip(),
                     "tipo":          row.get("tipo", "ambas").strip().lower(),
                     "zona":          row.get("zona", "").strip(),
+                    "ciudad":        row.get("ciudad", "").strip(),
                 })
             except ValueError:
                 continue
@@ -70,10 +71,14 @@ def cargar_parkings():
         logging.error(f"Error cargando parkings: {e}")
         return []
 
-def obtener_zonas(parkings):
-    """Extrae las zonas únicas de los parkings cargados, en orden alfabético."""
-    zonas = sorted(set(p["zona"] for p in parkings if p["zona"]))
-    return zonas
+def obtener_ciudades(parkings):
+    return sorted(set(p["ciudad"] for p in parkings if p["ciudad"]))
+
+def obtener_zonas_de_ciudad(parkings, ciudad):
+    return sorted(set(
+        p["zona"] for p in parkings
+        if p["zona"] and p["ciudad"].lower() == ciudad.lower()
+    ))
 
 # ── Cálculo de distancia ──────────────────────────────────────────────────────
 def distancia_km(lat1, lon1, lat2, lon2):
@@ -110,14 +115,17 @@ def seleccionar_parkings(parkings, lat, lon, tipo_filtro):
         ordenados = ordenar_por_distancia(filtrados, lat, lon)
         return ordenados[:2]
 
-def seleccionar_parkings_zona(parkings, zona, tipo_filtro):
-    """Filtra por zona (desde Sheets) y luego por tipo."""
-    filtrados = [p for p in parkings if p["zona"].lower() == zona.lower()]
+def seleccionar_parkings_ciudad_zona(parkings, ciudad, zona, tipo_filtro):
+    filtrados = [
+        p for p in parkings
+        if p["ciudad"].lower() == ciudad.lower() and p["zona"].lower() == zona.lower()
+    ]
     if not filtrados:
         return []
+    lat0 = sum(p["lat"] for p in filtrados) / len(filtrados)
+    lon0 = sum(p["lon"] for p in filtrados) / len(filtrados)
+
     if tipo_filtro == "todos":
-        lat0 = sum(p["lat"] for p in filtrados) / len(filtrados)
-        lon0 = sum(p["lon"] for p in filtrados) / len(filtrados)
         ordenados = ordenar_por_distancia(filtrados, lat0, lon0)
         vistos    = set()
         resultado = []
@@ -134,8 +142,6 @@ def seleccionar_parkings_zona(parkings, zona, tipo_filtro):
             p for p in filtrados
             if p["tipo"] == tipo_filtro or p["tipo"] == "ambas"
         ]
-        lat0 = sum(p["lat"] for p in filtrados) / len(filtrados)
-        lon0 = sum(p["lon"] for p in filtrados) / len(filtrados)
         return ordenar_por_distancia(por_tipo, lat0, lon0)[:2]
 
 # ── Textos y teclados ─────────────────────────────────────────────────────────
@@ -177,8 +183,8 @@ def teclado_parking(p, indice):
 # ── Menú principal ────────────────────────────────────────────────────────────
 async def mostrar_menu(chat_id, context):
     teclado = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📍 Enviar mi ubicación GPS",   callback_data="pedir_ubicacion")],
-        [InlineKeyboardButton("🗺️ Elegir zona de la ciudad", callback_data="elegir_zona")],
+        [InlineKeyboardButton("📍 Enviar mi ubicación GPS", callback_data="pedir_ubicacion")],
+        [InlineKeyboardButton("🏙️ Elegir ciudad",          callback_data="elegir_ciudad")],
     ])
     await context.bot.send_message(
         chat_id=chat_id,
@@ -249,6 +255,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     data = q.data
 
+    # ── Navegación principal ──
     if data == "menu":
         await mostrar_menu(q.message.chat_id, context)
 
@@ -259,26 +266,42 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
-    elif data == "elegir_zona":
+    # ── Paso 1: elegir ciudad ──
+    elif data == "elegir_ciudad":
         parkings = cargar_parkings()
-        zonas    = obtener_zonas(parkings)
-        if not zonas:
-            await q.message.reply_text(
-                "⚠️ No hay zonas definidas en la base de datos."
-            )
+        ciudades = obtener_ciudades(parkings)
+        if not ciudades:
+            await q.message.reply_text("⚠️ No hay ciudades definidas en la base de datos.")
             return
-        botones = [[InlineKeyboardButton(z, callback_data=f"zona_{z}")] for z in zonas]
+        botones = [[InlineKeyboardButton(c, callback_data=f"ciudad_{c}")] for c in ciudades]
+        botones.append([InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")])
+        await q.message.reply_text("Elige una ciudad:", reply_markup=InlineKeyboardMarkup(botones))
+
+    # ── Paso 2: elegir zona dentro de la ciudad ──
+    elif data.startswith("ciudad_"):
+        ciudad   = data[len("ciudad_"):]
+        parkings = cargar_parkings()
+        zonas    = obtener_zonas_de_ciudad(parkings, ciudad)
+        if not zonas:
+            await q.message.reply_text(f"⚠️ No hay zonas definidas para {ciudad}.")
+            return
+        botones = [
+            [InlineKeyboardButton(z, callback_data=f"zonacity_{ciudad}::{z}")] for z in zonas
+        ]
         botones.append([InlineKeyboardButton("⬅️ Volver al menú", callback_data="menu")])
         await q.message.reply_text(
-            "Elige una zona:",
+            f"Elige una zona en *{ciudad}*:",
+            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(botones)
         )
 
-    elif data.startswith("zona_"):
-        zona = data[5:]
-        context.user_data["zona_seleccionada"] = zona
-        await mostrar_filtro_tipo(q.message, f"zona_{zona}")
+    # ── Paso 3: zona elegida → pide tipo ──
+    elif data.startswith("zonacity_"):
+        resto         = data[len("zonacity_"):]
+        ciudad, zona  = resto.split("::", 1)
+        await mostrar_filtro_tipo(q.message, f"zonacity_{ciudad}::{zona}")
 
+    # ── Paso 4: tipo elegido → resultados ──
     elif data.startswith("tipo_"):
         partes   = data.split("_", 2)
         tipo     = partes[1]
@@ -296,9 +319,10 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for p in cercanos:
                 p["_dist"] = distancia_km(lat, lon, p["lat"], p["lon"])
 
-        elif origen.startswith("zona_"):
-            zona     = origen[5:]
-            cercanos = seleccionar_parkings_zona(parkings, zona, tipo)
+        elif origen.startswith("zonacity_"):
+            resto        = origen[len("zonacity_"):]
+            ciudad, zona = resto.split("::", 1)
+            cercanos     = seleccionar_parkings_ciudad_zona(parkings, ciudad, zona, tipo)
 
         else:
             await q.message.reply_text("⚠️ Origen no reconocido. Vuelve al menú.")
@@ -317,6 +341,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await enviar_resultados(q.message, cercanos)
 
+    # ── Reportes ──
     elif data.startswith("rep_"):
         partes  = data.split("_", 2)
         estado  = partes[1]
